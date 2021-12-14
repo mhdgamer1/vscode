@@ -428,6 +428,8 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 			this.dispose();
 		});
 
+		// Filter web requests
+
 		// Block all SVG requests from unsupported origins
 		const supportedSvgSchemes = new Set([Schemas.file, Schemas.vscodeFileResource, Schemas.vscodeRemoteResource, 'devtools']);
 
@@ -441,16 +443,45 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 			return false;
 		};
 
-		const isRequestFromSafeContext = (details: Electron.OnBeforeRequestListenerDetails | Electron.OnHeadersReceivedListenerDetails): boolean => {
+		const isSvgRequestFromSafeContext = (details: Electron.OnBeforeRequestListenerDetails | Electron.OnHeadersReceivedListenerDetails): boolean => {
 			return details.resourceType === 'xhr' || isSafeFrame(details.frame);
+		};
+
+		const workbenchRootUrl = FileAccess.asBrowserUri('vs/', require).toString(true);
+		const isAllowedVsCodeFileRequest = (uri: URI, details: Electron.OnBeforeRequestListenerDetails) => {
+			// Allow vscode-file requests from main window
+			if (details.frame?.url.startsWith('vscode-file://vscode-app/')) {
+				return true;
+			}
+
+			if (details.frame?.url || details.frame?.parent) { // Coming from unrecognized frame
+				return false;
+			}
+
+			// Dealing with frame without a url set yet. This happens when first loading a window.
+			// Here we still want to allow loading the main workbench html files
+			if (details.url.startsWith(workbenchRootUrl) && uri.path.endsWith('.html')) {
+				return true;
+			}
+
+			return false;
 		};
 
 		this._win.webContents.session.webRequest.onBeforeRequest((details, callback) => {
 			const uri = URI.parse(details.url);
+
+			if (uri.scheme === Schemas.vscodeFileResource) {
+				if (!isAllowedVsCodeFileRequest(uri, details)) {
+					console.log('Blocked vscode-file request', details.url);
+					return callback({ cancel: true });
+				}
+			}
+
+			// Block most svgs
 			if (uri.path.endsWith('.svg')) {
 				const isSafeResourceUrl = supportedSvgSchemes.has(uri.scheme);
 				if (!isSafeResourceUrl) {
-					return callback({ cancel: !isRequestFromSafeContext(details) });
+					return callback({ cancel: !isSvgRequestFromSafeContext(details) });
 				}
 			}
 
@@ -476,7 +507,7 @@ export class CodeWindow extends Disposable implements ICodeWindow {
 				// remote extension schemes have the following format
 				// http://127.0.0.1:<port>/vscode-remote-resource?path=
 				if (!uri.path.includes(Schemas.vscodeRemoteResource) && contentTypes.some(contentType => contentType.toLowerCase().includes('image/svg'))) {
-					return callback({ cancel: !isRequestFromSafeContext(details) });
+					return callback({ cancel: !isSvgRequestFromSafeContext(details) });
 				}
 			}
 
